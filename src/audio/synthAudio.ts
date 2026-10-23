@@ -1,611 +1,524 @@
-/**
- * Cozy Procedural Web Audio Synthesizer
- * 100% procedural Web Audio API sounds - zero external audio assets!
- */
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  GameState,
+  VehicleUpgrades,
+  VehicleSkin,
+  LevelConfig,
+  ActiveGameStats,
+  SaveGameData,
+  GraphicsSettings,
+  DailyChallenge,
+} from './types/game';
+import { SnowScene } from './three/SnowScene';
+import { TitleScreen } from './components/TitleScreen';
+import { HomeMenu } from './components/HomeMenu';
+import { GameHUD } from './components/GameHUD';
+import { GarageModal } from './components/GarageModal';
+import { PauseVictoryModal } from './components/PauseVictoryModal';
+import { LoadingScreen } from './components/LoadingScreen';
+import { PhotoModeOverlay } from './components/PhotoModeOverlay';
+import { synthAudio } from './audio/synthAudio';
+import { saveManager, DEFAULT_GRAPHICS_SETTINGS } from './utils/saveManager';
+import { getDailyChallenge } from './utils/dailyChallenge';
 
-class SynthAudioSystem {
-  private ctx: AudioContext | null = null;
-  private isMuted: boolean = false;
-  private musicVolume: number = 0.35;
-  private sfxVolume: number = 0.6;
+const AVAILABLE_SKINS: VehicleSkin[] = [
+  {
+    id: 'nordic_yellow',
+    name: 'Nordic Safety Gold',
+    primaryColor: '#f59e0b',
+    secondaryColor: '#1e293b',
+    bladeColor: '#fbbf24',
+    unlocked: true,
+    cost: 0,
+  },
+  {
+    id: 'alpine_red',
+    name: 'Alpine Rescue Red',
+    primaryColor: '#dc2626',
+    secondaryColor: '#ffffff',
+    bladeColor: '#e2e8f0',
+    unlocked: true,
+    cost: 50,
+  },
+  {
+    id: 'glacier_mint',
+    name: 'Glacier Mint Frost',
+    primaryColor: '#06b6d4',
+    secondaryColor: '#0f172a',
+    bladeColor: '#67e8f9',
+    unlocked: true,
+    cost: 75,
+  },
+  {
+    id: 'midnight_cyber',
+    name: 'Midnight Blizzard',
+    primaryColor: '#312e81',
+    secondaryColor: '#f59e0b',
+    bladeColor: '#818cf8',
+    unlocked: true,
+    cost: 100,
+  },
+  {
+    id: 'town_hero_gold',
+    name: 'Town Hero Gold Livery',
+    primaryColor: '#eab308',
+    secondaryColor: '#fef08a',
+    bladeColor: '#fde047',
+    unlocked: true,
+    cost: 150,
+    requiredReputation: 80,
+  },
+];
 
-  // Engine audio nodes
-  private engineOsc: OscillatorNode | null = null;
-  private engineSubOsc: OscillatorNode | null = null;
-  private engineFilter: BiquadFilterNode | null = null;
-  private engineGain: GainNode | null = null;
+const GAME_LEVELS: LevelConfig[] = [
+  {
+    id: 1,
+    name: 'Sugar Pine Cul-de-Sac',
+    subtitle: 'Warm cabins & gentle suburban snow',
+    description: 'Clear the looping cul-de-sac and residential driveways before morning commuters leave!',
+    targetPercent: 75,
+    size: { width: 55, length: 55 },
+    snowDensity: 'light',
+    ambientMood: 'sunrise',
+  },
+  {
+    id: 2,
+    name: 'Alpine Village Pass',
+    subtitle: 'Charming chalets & frozen roads',
+    description: 'Winding mountain curves, frozen slippery ice ponds, and heavier snowdrifts.',
+    targetPercent: 80,
+    size: { width: 68, length: 68 },
+    snowDensity: 'moderate',
+    ambientMood: 'afternoon',
+  },
+  {
+    id: 3,
+    name: 'Blizzard Boulevard',
+    subtitle: 'Deep snowdrifts & downtown avenue',
+    description: 'Intense snow squalls in the town square. Massive snow mounds and hidden golden gifts!',
+    targetPercent: 85,
+    size: { width: 80, length: 80 },
+    snowDensity: 'blizzard',
+    ambientMood: 'twilight',
+  },
+];
 
-  // Snow crunch / plowing noise nodes
-  private snowNoiseNode: AudioNode | null = null;
-  private snowNoiseFilter: BiquadFilterNode | null = null;
-  private snowNoiseGain: GainNode | null = null;
+export default function App() {
+  const canvasMountRef = useRef<HTMLDivElement>(null);
+  const snowSceneRef = useRef<SnowScene | null>(null);
+  const previousStateRef = useRef<GameState>('TITLE');
+  const [startupError, setStartupError] = useState<string | null>(null);
 
-  // Ambient synth music timer
-  private ambientInterval: number | null = null;
-  private masterGain: GainNode | null = null;
-  private isInitialized = false;
+  const [saveData, setSaveData] = useState<SaveGameData>(() => saveManager.load());
+  const [gameState, setGameState] = useState<GameState>('TITLE');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isPhotoMode, setIsPhotoMode] = useState<boolean>(false);
+  const [levelIndex, setLevelIndex] = useState<number>(() => Math.max(0, (saveData.selectedLevelId || 1) - 1));
+  const [coins, setCoins] = useState<number>(() => saveData.coins);
+  const [upgrades, setUpgrades] = useState<VehicleUpgrades>(() => saveData.upgrades);
+  const [activeSkinId, setActiveSkinId] = useState<string>(() => saveData.activeSkinId);
+  const [dailyChallenge, setDailyChallenge] = useState<DailyChallenge>(() =>
+    getDailyChallenge(saveData.dailyChallengeCompletedDate)
+  );
+  const [graphicsSettings, setGraphicsSettings] = useState<GraphicsSettings>(
+    () => saveData.graphicsSettings || DEFAULT_GRAPHICS_SETTINGS
+  );
+  const [forcedMobileControls, setForcedMobileControls] = useState<boolean>(
+    () => !!saveData.mobileControlsForced
+  );
 
-  private pentatonicScale = [
-    261.63, // C4
-    293.66, // D4
-    329.63, // E4
-    392.00, // G4
-    440.00, // A4
-    523.25, // C5
-    587.33, // D5
-    659.25, // E5
-    783.99, // G5
-    880.00, // A5
-    1046.50, // C6
-    1174.66, // D6
-  ];
+  const [activeStats, setActiveStats] = useState<ActiveGameStats>({
+    clearedPercent: 0,
+    totalSnowUnits: 1000,
+    clearedUnits: 0,
+    combo: 1,
+    comboTimer: 0,
+    score: 0,
+    coinsEarned: 0,
+    boostFuel: 100,
+    maxBoostFuel: 100,
+    isBoosting: false,
+    speed: 0,
+    elapsedTime: 0,
+    currentDistrictName: 'Maple Residential Loop',
+    currentDistrictReputation: 50,
+    currentDistrictTier: 'Neutral',
+    overallTownReputation: 50,
+    activeWeather: 'light_snow',
+    weatherTimeRemaining: 45,
+    weatherNotification: '',
+  });
 
-  public init() {
-    if (this.isInitialized) return;
+  const currentLevel = GAME_LEVELS[levelIndex] || GAME_LEVELS[0];
+  const activeSkin = AVAILABLE_SKINS.find((s) => s.id === activeSkinId) || AVAILABLE_SKINS[0];
+
+  useEffect(() => {
     try {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AudioCtx();
-      this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.setValueAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime);
-      this.masterGain.connect(this.ctx.destination);
-
-      this.setupEngineSynth();
-      this.setupSnowNoise();
-      this.startAmbientMusic();
-      this.isInitialized = true;
-    } catch (e) {
-      console.warn('AudioContext failed to initialize:', e);
-    }
-  }
-
-  public ensureAudio() {
-    if (!this.ctx) {
-      this.init();
-    }
-    if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
-    }
-  }
-
-  private setupEngineSynth() {
-    if (!this.ctx || !this.masterGain) return;
-
-    try {
-      this.engineOsc = this.ctx.createOscillator();
-      this.engineSubOsc = this.ctx.createOscillator();
-      this.engineFilter = this.ctx.createBiquadFilter();
-      this.engineGain = this.ctx.createGain();
-
-      this.engineOsc.type = 'sawtooth';
-      this.engineOsc.frequency.setValueAtTime(48, this.ctx.currentTime);
-
-      this.engineSubOsc.type = 'triangle';
-      this.engineSubOsc.frequency.setValueAtTime(24, this.ctx.currentTime);
-
-      this.engineFilter.type = 'lowpass';
-      this.engineFilter.frequency.setValueAtTime(140, this.ctx.currentTime);
-      this.engineFilter.Q.setValueAtTime(2.5, this.ctx.currentTime);
-
-      this.engineGain.gain.setValueAtTime(0.001, this.ctx.currentTime);
-
-      this.engineOsc.connect(this.engineFilter);
-      this.engineSubOsc.connect(this.engineFilter);
-      this.engineFilter.connect(this.engineGain);
-      this.engineGain.connect(this.masterGain);
-
-      this.engineOsc.start();
-      this.engineSubOsc.start();
-    } catch (e) {
-      console.warn('Could not setup engine synth', e);
-    }
-  }
-
-  private setupSnowNoise() {
-    if (!this.ctx || !this.masterGain) return;
-
-    try {
-      // 2 seconds buffer of pink/white noise
-      const bufferSize = this.ctx.sampleRate * 2;
-      const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-      const output = noiseBuffer.getChannelData(0);
-      let b0 = 0, b1 = 0, b2 = 0;
-      for (let i = 0; i < bufferSize; i++) {
-        const white = Math.random() * 2 - 1;
-        // Simple pink noise filter approximation
-        b0 = 0.99765 * b0 + white * 0.0990460;
-        b1 = 0.96300 * b1 + white * 0.1349386;
-        b2 = 0.57000 * b2 + white * 0.4075590;
-        output[i] = (b0 + b1 + b2 + white * 0.5362) * 0.12;
-      }
-
-      const whiteNoise = this.ctx.createBufferSource();
-      whiteNoise.buffer = noiseBuffer;
-      whiteNoise.loop = true;
-
-      this.snowNoiseFilter = this.ctx.createBiquadFilter();
-      this.snowNoiseFilter.type = 'bandpass';
-      this.snowNoiseFilter.frequency.setValueAtTime(650, this.ctx.currentTime);
-      this.snowNoiseFilter.Q.setValueAtTime(1.2, this.ctx.currentTime);
-
-      this.snowNoiseGain = this.ctx.createGain();
-      this.snowNoiseGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-      whiteNoise.connect(this.snowNoiseFilter);
-      this.snowNoiseFilter.connect(this.snowNoiseGain);
-      this.snowNoiseGain.connect(this.masterGain);
-
-      whiteNoise.start();
-      this.snowNoiseNode = whiteNoise;
-    } catch (e) {
-      console.warn('Could not setup snow noise', e);
-    }
-  }
-
-  public updateEngine(speedNormalized: number, isBoosting: boolean) {
-    if (!this.ctx || !this.engineOsc || !this.engineGain || !this.engineFilter || !this.engineSubOsc) return;
-
-    const t = this.ctx.currentTime;
-    const baseFreq = 42 + speedNormalized * 75 + (isBoosting ? 35 : 0);
-    const filterFreq = 120 + speedNormalized * 320 + (isBoosting ? 220 : 0);
-    const targetGain = Math.min(0.12, (0.02 + speedNormalized * 0.08) * this.sfxVolume);
-
-    this.engineOsc.frequency.setTargetAtTime(baseFreq, t, 0.08);
-    this.engineSubOsc.frequency.setTargetAtTime(baseFreq * 0.5, t, 0.08);
-    this.engineFilter.frequency.setTargetAtTime(filterFreq, t, 0.1);
-    this.engineGain.gain.setTargetAtTime(targetGain, t, 0.08);
-  }
-
-  public updateSnowPlowing(isClearing: boolean, speedRatio: number) {
-    if (!this.ctx || !this.snowNoiseGain || !this.snowNoiseFilter) return;
-
-    const t = this.ctx.currentTime;
-    if (isClearing && speedRatio > 0.05) {
-      const targetGain = Math.min(0.24, (0.06 + speedRatio * 0.15) * this.sfxVolume);
-      const targetFreq = 500 + speedRatio * 450;
-      this.snowNoiseGain.gain.setTargetAtTime(targetGain, t, 0.06);
-      this.snowNoiseFilter.frequency.setTargetAtTime(targetFreq, t, 0.06);
-    } else {
-      this.snowNoiseGain.gain.setTargetAtTime(0.0001, t, 0.09);
-    }
-  }
-
-  public playComboChime(comboLevel: number) {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-
-    try {
-      const t = this.ctx.currentTime;
-      const index = Math.min(this.pentatonicScale.length - 1, 3 + comboLevel);
-      const freq = this.pentatonicScale[index];
-
-      // Bell chime: Sine oscillator with fast transient and rich harmonic overtone
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(freq, t);
-
-      // Bell harmonic (e.g. 2.76x or octave)
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(freq * 2.01, t);
-
-      gain.gain.setValueAtTime(0.2 * this.sfxVolume, t);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.65 + Math.min(comboLevel * 0.05, 0.4));
-
-      osc1.connect(gain);
-      osc2.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc1.start(t);
-      osc2.start(t);
-      osc1.stop(t + 1.2);
-      osc2.stop(t + 1.2);
-    } catch {
-      // Audio fallback safe
-    }
-  }
-
-  public playPickup() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const t = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, t); // D5
-      osc.frequency.setValueAtTime(880.00, t + 0.06); // A5
-      osc.frequency.setValueAtTime(1174.66, t + 0.12); // D6
-
-      gain.gain.setValueAtTime(0.18 * this.sfxVolume, t);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
-
-      osc.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc.start(t);
-      osc.stop(t + 0.4);
-    } catch {}
-  }
-
-  public playBoost() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const t = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(90, t);
-      osc.frequency.exponentialRampToValueAtTime(260, t + 0.4);
-
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(200, t);
-      filter.frequency.exponentialRampToValueAtTime(1200, t + 0.35);
-
-      gain.gain.setValueAtTime(0.25 * this.sfxVolume, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc.start(t);
-      osc.stop(t + 0.5);
-    } catch {}
-  }
-
-  public playBump() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const t = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(110, t);
-      osc.frequency.exponentialRampToValueAtTime(35, t + 0.18);
-
-      gain.gain.setValueAtTime(0.3 * this.sfxVolume, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-
-      osc.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc.start(t);
-      osc.stop(t + 0.25);
-    } catch {}
-  }
-
-  public playWeatherAlert() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const now = this.ctx.currentTime;
-      // Dual-tone warning chime for weather shifts (A4 -> E5)
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(440, now);
-      osc1.frequency.setValueAtTime(659.25, now + 0.14);
-
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(880, now);
-      osc2.frequency.setValueAtTime(1318.5, now + 0.14);
-
-      gain.gain.setValueAtTime(0.2 * this.sfxVolume, now);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
-
-      osc1.connect(gain);
-      osc2.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc1.start(now);
-      osc2.start(now);
-      osc1.stop(now + 0.7);
-      osc2.stop(now + 0.7);
-    } catch {}
-  }
-
-  public playBlizzardGust() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const now = this.ctx.currentTime;
-      // Howling wind gust: filtered noise/oscillator with sweeping lowpass filter
-      const osc = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(120, now);
-      osc.frequency.linearRampToValueAtTime(260, now + 0.8);
-      osc.frequency.linearRampToValueAtTime(80, now + 2.2);
-
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(280, now);
-      filter.frequency.linearRampToValueAtTime(680, now + 1.0);
-      filter.frequency.linearRampToValueAtTime(220, now + 2.5);
-      filter.Q.setValueAtTime(3.0, now);
-
-      gain.gain.setValueAtTime(0.001, now);
-      gain.gain.linearRampToValueAtTime(0.18 * this.sfxVolume, now + 0.7);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 2.6);
-
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc.start(now);
-      osc.stop(now + 2.7);
-    } catch {}
-  }
-
-  public playUpgrade() {
-    if (!this.ctx || !this.masterGain || this.isMuted) return;
-    try {
-      const notes = [329.63, 392.0, 523.25, 659.25, 783.99]; // E4, G4, C5, E5, G5
-      const now = this.ctx.currentTime;
-      notes.forEach((freq, idx) => {
-        if (!this.ctx || !this.masterGain) return;
-        const noteTime = now + idx * 0.08;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, noteTime);
-
-        gain.gain.setValueAtTime(0.18 * this.sfxVolume, noteTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.3);
-
-        osc.connect(gain);
-        gain.connect(this.masterGain);
-        osc.start(noteTime);
-        osc.stop(noteTime + 0.35);
+      saveManager.save({
+        coins,
+        upgrades,
+        activeSkinId,
+        selectedLevelId: levelIndex + 1,
+        highScore: Math.max(saveData.highScore, activeStats.score),
+        highestCombo: Math.max(saveData.highestCombo, activeStats.combo),
+        graphicsSettings,
+        mobileControlsForced: forcedMobileControls,
+        dailyChallengeCompletedDate: dailyChallenge.isCompleted ? dailyChallenge.dateString : undefined,
       });
-    } catch {}
-  }
-
-  // Jukebox Tracks System
-  public currentTrackIndex = 0;
-  public tracks = [
-    { id: 0, name: 'Lo-fi Winter Chill', mood: 'Warm electric piano & mellow snowfall chords', interval: 4400 },
-    { id: 1, name: 'Snowflake Waltz', mood: 'Crystalline music box arpeggios & bells', interval: 3200 },
-    { id: 2, name: 'Alpine Mountain Pass', mood: 'Cozy melodic groove with analog bassline', interval: 3800 },
-    { id: 3, name: 'Aurora Twilight', mood: 'Deep ambient pads & starry reverb sweeps', interval: 5200 },
-  ];
-  private isPaused: boolean = false;
-
-  public setPaused(paused: boolean) {
-    this.isPaused = paused;
-    if (paused) {
-      if (this.engineGain && this.ctx) {
-        this.engineGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
-      }
-      if (this.snowNoiseGain && this.ctx) {
-        this.snowNoiseGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
-      }
+      setSaveData(saveManager.getSave());
+    } catch (error) {
+      console.warn('Save failed:', error);
     }
-  }
+  }, [coins, upgrades, activeSkinId, levelIndex, activeStats.score, activeStats.combo, graphicsSettings, forcedMobileControls, dailyChallenge.isCompleted]);
 
-  public getTrackList() {
-    return this.tracks;
-  }
-
-  public getCurrentTrackInfo() {
-    return this.tracks[this.currentTrackIndex] || this.tracks[0];
-  }
-
-  public setTrack(index: number) {
-    this.currentTrackIndex = Math.max(0, Math.min(this.tracks.length - 1, index));
-    this.restartAmbientMusic();
-    return this.getCurrentTrackInfo();
-  }
-
-  public cycleTrack() {
-    this.currentTrackIndex = (this.currentTrackIndex + 1) % this.tracks.length;
-    this.restartAmbientMusic();
-    return this.getCurrentTrackInfo();
-  }
-
-  private restartAmbientMusic() {
-    if (this.ambientInterval) {
-      clearInterval(this.ambientInterval);
-      this.ambientInterval = null;
+  useEffect(() => {
+    if (snowSceneRef.current) {
+      const shouldPause = gameState === 'PAUSED' || isPhotoMode;
+      snowSceneRef.current.setPaused(shouldPause);
     }
-    this.startAmbientMusic();
-  }
+  }, [gameState, isPhotoMode]);
 
-  private startAmbientMusic() {
-    if (this.ambientInterval) return;
+  useEffect(() => {
+    if (snowSceneRef.current) {
+      snowSceneRef.current.applyGraphicsSettings(graphicsSettings);
+    }
+  }, [graphicsSettings]);
 
-    // Track 0: Lo-fi Winter Chill (Cmaj7 -> Am9 -> Dm9 -> G13)
-    const lofiChords = [
-      [261.63, 329.63, 392.00, 493.88], // Cmaj7
-      [220.00, 261.63, 329.63, 392.00, 493.88], // Am9
-      [146.83, 220.00, 261.63, 329.63, 392.00], // Dm9
-      [196.00, 246.94, 329.63, 440.00], // G13
-    ];
+  useEffect(() => {
+    if (!canvasMountRef.current) return;
 
-    // Track 1: Snowflake Waltz (Fmaj7 -> Em7 -> Dm7 -> Cmaj7 arpeggios)
-    const waltzNotes = [
-      [349.23, 440.00, 523.25, 659.25], // Fmaj7
-      [329.63, 392.00, 493.88, 587.33], // Em7
-      [293.66, 349.23, 440.00, 523.25], // Dm7
-      [261.63, 329.63, 392.00, 523.25], // Cmaj7
-    ];
+    try {
+      const scene = new SnowScene(
+        canvasMountRef.current,
+        currentLevel,
+        upgrades,
+        activeSkin,
+        (stats) => {
+          setActiveStats(stats);
 
-    // Track 2: Alpine Mountain Pass (G -> Em -> C -> D bass & upbeat chords)
-    const alpineChords = [
-      { bass: 98.0, chord: [196.00, 246.94, 293.66, 392.00] }, // G
-      { bass: 82.41, chord: [164.81, 196.00, 246.94, 329.63] }, // Em
-      { bass: 130.81, chord: [261.63, 329.63, 392.00, 523.25] }, // C
-      { bass: 146.83, chord: [293.66, 369.99, 440.00, 587.33] }, // D
-    ];
+          if (!dailyChallenge.isCompleted && dailyChallenge.levelId === currentLevel.id) {
+            const reachedTarget = stats.clearedPercent >= dailyChallenge.targetPercent;
+            const weatherMatch = !dailyChallenge.requiredWeather || stats.activeWeather === dailyChallenge.requiredWeather;
+            const timeMatch = !dailyChallenge.timeLimitSeconds || stats.elapsedTime <= dailyChallenge.timeLimitSeconds;
 
-    // Track 3: Aurora Twilight (Deep pads: Ebmaj7 -> Cm7 -> Abmaj7 -> Bb)
-    const auroraPads = [
-      [155.56, 233.08, 311.13, 392.00, 466.16], // Ebmaj7
-      [130.81, 196.00, 261.63, 311.13, 392.00], // Cm7
-      [103.83, 207.65, 261.63, 311.13, 415.30], // Abmaj7
-      [116.54, 233.08, 293.66, 349.23, 466.16], // Bb
-    ];
+            if (reachedTarget && weatherMatch && timeMatch) {
+              setDailyChallenge((prev) => ({ ...prev, isCompleted: true }));
+              setCoins((c) => c + dailyChallenge.rewardCoins);
+              synthAudio.playUpgrade();
+            }
+          }
+        },
+        () => {
+          setGameState('VICTORY');
+          setCoins((prev) => {
+            const next = prev + 35;
+            saveManager.save({ coins: next, unlockedLevel: Math.max(saveData.unlockedLevel, levelIndex + 2) });
+            return next;
+          });
+        }
+      );
 
-    let chordStep = 0;
+      scene.applyGraphicsSettings(graphicsSettings);
+      snowSceneRef.current = scene;
+      setStartupError(null);
 
-    const playStep = () => {
-      if (!this.ctx || !this.masterGain || this.isMuted || this.isPaused) return;
-      const now = this.ctx.currentTime;
-      const track = this.currentTrackIndex;
+      return () => {
+        scene.destroy();
+        snowSceneRef.current = null;
+      };
+    } catch (error) {
+      console.error('SnowScene failed to initialize:', error);
+      setStartupError('The snow scene failed to initialize in this browser. Try refreshing or using a different browser.');
+      return;
+    }
+  }, [levelIndex]);
 
-      if (track === 0) {
-        // Track 0: Lo-fi warm chords
-        const chord = lofiChords[chordStep % lofiChords.length];
-        chordStep++;
-        chord.forEach((freq, i) => {
-          if (!this.ctx || !this.masterGain) return;
-          const osc = this.ctx.createOscillator();
-          const filter = this.ctx.createBiquadFilter();
-          const gain = this.ctx.createGain();
+  useEffect(() => {
+    if (snowSceneRef.current) {
+      snowSceneRef.current.updateUpgradesAndSkin(upgrades, activeSkin);
+    }
+  }, [upgrades, activeSkin]);
 
-          osc.type = i % 2 === 0 ? 'sine' : 'triangle';
-          osc.frequency.setValueAtTime(freq * 0.5, now);
-
-          filter.type = 'lowpass';
-          filter.frequency.setValueAtTime(380, now);
-
-          gain.gain.setValueAtTime(0.001, now);
-          gain.gain.linearRampToValueAtTime(0.04 * this.musicVolume, now + 1.0);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 4.2);
-
-          osc.connect(filter);
-          filter.connect(gain);
-          gain.connect(this.masterGain);
-
-          osc.start(now);
-          osc.stop(now + 4.4);
-        });
-      } else if (track === 1) {
-        // Track 1: Snowflake Waltz arpeggios
-        const notes = waltzNotes[chordStep % waltzNotes.length];
-        chordStep++;
-        notes.forEach((freq, idx) => {
-          if (!this.ctx || !this.masterGain) return;
-          const tNote = now + idx * 0.38;
-          const osc = this.ctx.createOscillator();
-          const gain = this.ctx.createGain();
-
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(freq, tNote);
-
-          gain.gain.setValueAtTime(0.001, tNote);
-          gain.gain.linearRampToValueAtTime(0.045 * this.musicVolume, tNote + 0.05);
-          gain.gain.exponentialRampToValueAtTime(0.0005, tNote + 1.8);
-
-          osc.connect(gain);
-          gain.connect(this.masterGain);
-
-          osc.start(tNote);
-          osc.stop(tNote + 1.9);
-        });
-      } else if (track === 2) {
-        // Track 2: Alpine Mountain Pass with synth bass
-        const item = alpineChords[chordStep % alpineChords.length];
-        chordStep++;
-
-        // Bass punch
-        const bassOsc = this.ctx.createOscillator();
-        const bassGain = this.ctx.createGain();
-        bassOsc.type = 'triangle';
-        bassOsc.frequency.setValueAtTime(item.bass, now);
-        bassGain.gain.setValueAtTime(0.06 * this.musicVolume, now);
-        bassGain.gain.exponentialRampToValueAtTime(0.001, now + 1.6);
-        bassOsc.connect(bassGain);
-        bassGain.connect(this.masterGain);
-        bassOsc.start(now);
-        bassOsc.stop(now + 1.7);
-
-        // Synth chord
-        item.chord.forEach((freq) => {
-          if (!this.ctx || !this.masterGain) return;
-          const osc = this.ctx.createOscillator();
-          const filter = this.ctx.createBiquadFilter();
-          const gain = this.ctx.createGain();
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(freq * 0.5, now);
-          filter.type = 'lowpass';
-          filter.frequency.setValueAtTime(420, now);
-          gain.gain.setValueAtTime(0.001, now);
-          gain.gain.linearRampToValueAtTime(0.028 * this.musicVolume, now + 0.5);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 3.2);
-          osc.connect(filter);
-          filter.connect(gain);
-          gain.connect(this.masterGain);
-          osc.start(now);
-          osc.stop(now + 3.3);
-        });
-      } else {
-        // Track 3: Aurora Twilight ambient space pads
-        const pad = auroraPads[chordStep % auroraPads.length];
-        chordStep++;
-        pad.forEach((freq) => {
-          if (!this.ctx || !this.masterGain) return;
-          const osc = this.ctx.createOscillator();
-          const filter = this.ctx.createBiquadFilter();
-          const gain = this.ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(freq * 0.5, now);
-          filter.type = 'lowpass';
-          filter.frequency.setValueAtTime(500, now);
-          filter.frequency.linearRampToValueAtTime(260, now + 4.5);
-          gain.gain.setValueAtTime(0.001, now);
-          gain.gain.linearRampToValueAtTime(0.038 * this.musicVolume, now + 1.8);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + 5.0);
-          osc.connect(filter);
-          filter.connect(gain);
-          gain.connect(this.masterGain);
-          osc.start(now);
-          osc.stop(now + 5.2);
-        });
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if (e.code === 'Escape') {
+        if (isPhotoMode) {
+          handleExitPhotoMode();
+        } else if (gameState === 'PLAYING') {
+          setGameState('PAUSED');
+        } else if (gameState === 'PAUSED') {
+          setGameState('PLAYING');
+        } else if (gameState === 'GARAGE') {
+          handleCloseGarage();
+        } else if (gameState === 'HOME') {
+          setGameState('PLAYING');
+        }
+      } else if (e.code === 'KeyP' && gameState === 'PLAYING' && !isPhotoMode) {
+        handleEnterPhotoMode();
+      } else if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
+        if (gameState === 'PLAYING' && !isPhotoMode) {
+          handleResetCar();
+        }
       }
     };
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, [gameState, isPhotoMode]);
 
-    const intervalMs = this.tracks[this.currentTrackIndex]?.interval || 4200;
-    playStep();
-    this.ambientInterval = window.setInterval(playStep, intervalMs);
-  }
-
-  public toggleMute(): boolean {
-    this.isMuted = !this.isMuted;
-    if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime);
+  const handleStartGame = () => {
+    synthAudio.ensureAudio();
+    setIsLoading(true);
+    if (gameState === 'TITLE' && snowSceneRef.current) {
+      snowSceneRef.current.restartLevel();
     }
-    return this.isMuted;
+  };
+
+  const handleLoadingFinish = () => {
+    setIsLoading(false);
+    setGameState('PLAYING');
+  };
+
+  const handlePause = () => setGameState('PAUSED');
+  const handleResume = () => setGameState('PLAYING');
+
+  const handleRestart = () => {
+    if (snowSceneRef.current) {
+      snowSceneRef.current.restartLevel();
+    }
+    setIsLoading(true);
+  };
+
+  const handleResetCar = () => {
+    if (snowSceneRef.current) {
+      snowSceneRef.current.resetVehicleToCenter();
+    }
+  };
+
+  const handleEnterPhotoMode = () => {
+    setIsPhotoMode(true);
+    if (snowSceneRef.current) {
+      snowSceneRef.current.setPhotoMode(true);
+    }
+  };
+
+  const handleExitPhotoMode = () => {
+    setIsPhotoMode(false);
+    if (snowSceneRef.current) {
+      snowSceneRef.current.setPhotoMode(false);
+    }
+  };
+
+  const handleNextLevel = () => {
+    const nextIdx = (levelIndex + 1) % GAME_LEVELS.length;
+    setLevelIndex(nextIdx);
+    setIsLoading(true);
+  };
+
+  const handleVirtualKey = (action: 'forward' | 'backward' | 'left' | 'right' | 'boost', isHeld: boolean) => {
+    if (snowSceneRef.current && !isPhotoMode && gameState === 'PLAYING') {
+      snowSceneRef.current.setVirtualKey(action, isHeld);
+    }
+  };
+
+  const handleUpgrade = (key: keyof VehicleUpgrades, cost: number) => {
+    if (coins < cost) return;
+    setCoins((c) => c - cost);
+    setUpgrades((u) => ({
+      ...u,
+      [key]: (u[key] || 0) + 1,
+    }));
+  };
+
+  const handleSelectSkin = (skinId: string) => setActiveSkinId(skinId);
+
+  const handleOpenGarage = () => {
+    previousStateRef.current = gameState;
+    setGameState('GARAGE');
+  };
+
+  const handleCloseGarage = () => {
+    const targetState = previousStateRef.current === 'HOME' ? 'HOME' : previousStateRef.current === 'PLAYING' ? 'PLAYING' : 'TITLE';
+    setGameState(targetState);
+  };
+
+  const handleOpenHomeMenu = () => {
+    previousStateRef.current = gameState;
+    setGameState('HOME');
+  };
+
+  const handleBackToTitle = () => {
+    setGameState('HOME');
+    if (snowSceneRef.current) {
+      snowSceneRef.current.restartLevel();
+    }
+  };
+
+  const handleResetSave = () => {
+    const fresh = saveManager.resetAllProgress();
+    setSaveData(fresh);
+    setCoins(fresh.coins);
+    setUpgrades(fresh.upgrades);
+    setActiveSkinId(fresh.activeSkinId);
+    setLevelIndex(0);
+    setGraphicsSettings(DEFAULT_GRAPHICS_SETTINGS);
+    setDailyChallenge(getDailyChallenge());
+    if (snowSceneRef.current) {
+      snowSceneRef.current.restartLevel();
+      snowSceneRef.current.applyGraphicsSettings(DEFAULT_GRAPHICS_SETTINGS);
+    }
+  };
+
+  if (startupError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0c131f] px-6 text-white">
+        <div className="max-w-lg rounded-2xl border border-red-500/40 bg-white/5 p-8 text-center shadow-2xl backdrop-blur-sm">
+          <div className="mb-4 text-4xl">⚠️</div>
+          <h1 className="mb-3 text-2xl font-bold">Unable to start SnowDrift</h1>
+          <p className="text-sm text-slate-300">{startupError}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-6 rounded-xl bg-amber-400 px-4 py-2 font-semibold text-slate-900 transition hover:bg-amber-300"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+    );
   }
 
-  public getMuted(): boolean {
-    return this.isMuted;
-  }
+  return (
+    <div className="relative w-screen h-screen overflow-hidden bg-[#0c131f] font-sans">
+      <div ref={canvasMountRef} className="absolute inset-0 w-full h-full z-0" />
 
-  public setMute(muted: boolean) {
-    this.isMuted = muted;
-    if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime);
-    }
-  }
+      {gameState === 'TITLE' && !isPhotoMode && (
+        <TitleScreen
+          onStartGame={handleStartGame}
+          onOpenGarage={handleOpenGarage}
+          onOpenHomeMenu={handleOpenHomeMenu}
+          onSelectLevel={(lvl) => {
+            const idx = GAME_LEVELS.findIndex((l) => l.id === lvl.id);
+            if (idx !== -1) {
+              setLevelIndex(idx);
+              setIsLoading(true);
+            }
+          }}
+          levels={GAME_LEVELS}
+          currentLevel={currentLevel}
+          currentSkin={activeSkin}
+          coins={coins}
+          dailyChallenge={dailyChallenge}
+        />
+      )}
 
-  public dispose() {
-    if (this.ambientInterval) {
-      clearInterval(this.ambientInterval);
-      this.ambientInterval = null;
-    }
-    if (this.ctx) {
-      this.ctx.close().catch(() => {});
-      this.ctx = null;
-    }
-    this.isInitialized = false;
-  }
+      {gameState === 'HOME' && !isPhotoMode && (
+        <HomeMenu
+          levels={GAME_LEVELS}
+          currentLevel={currentLevel}
+          saveData={saveData}
+          activeSkin={activeSkin}
+          dailyChallenge={dailyChallenge}
+          graphicsSettings={graphicsSettings}
+          forcedMobileControls={forcedMobileControls}
+          onSelectLevel={(lvl) => {
+            const idx = GAME_LEVELS.findIndex((l) => l.id === lvl.id);
+            if (idx !== -1) {
+              setLevelIndex(idx);
+              setIsLoading(true);
+            }
+          }}
+          onPlayGame={() => {
+            synthAudio.ensureAudio();
+            setIsLoading(true);
+          }}
+          onOpenGarage={handleOpenGarage}
+          onResetSave={handleResetSave}
+          onClaimDailyReward={(bonus) => {
+            setCoins((c) => c + bonus);
+            setDailyChallenge((d) => ({ ...d, isCompleted: true }));
+          }}
+          onUpdateGraphicsSettings={(s) => {
+            setGraphicsSettings(s);
+          }}
+          onToggleForcedMobileControls={() => {
+            setForcedMobileControls((f) => !f);
+          }}
+        />
+      )}
+
+      {gameState === 'PLAYING' && !isPhotoMode && (
+        <GameHUD
+          stats={activeStats}
+          level={currentLevel}
+          dailyChallenge={dailyChallenge}
+          forcedMobileControls={forcedMobileControls}
+          onPause={handlePause}
+          onOpenGarage={handleOpenGarage}
+          onRestart={handleRestart}
+          onResetCar={handleResetCar}
+          onOpenPhotoMode={handleEnterPhotoMode}
+          onVirtualKey={handleVirtualKey}
+        />
+      )}
+
+      {isPhotoMode && (
+        <PhotoModeOverlay
+          districtName={activeStats.currentDistrictName || currentLevel.name}
+          onExit={handleExitPhotoMode}
+          onCaptureScreenshot={() => {
+            if (snowSceneRef.current) {
+              return snowSceneRef.current.captureScreenshot();
+            }
+            return '';
+          }}
+          onSetFov={(zoom) => {
+            if (snowSceneRef.current) {
+              snowSceneRef.current.setPhotoFov(zoom);
+            }
+          }}
+          onRotateCamera={(yawDelta, pitchDelta) => {
+            if (snowSceneRef.current) {
+              snowSceneRef.current.rotatePhotoCamera(yawDelta, pitchDelta);
+            }
+          }}
+        />
+      )}
+
+      {isLoading && (
+        <LoadingScreen
+          level={currentLevel}
+          onFinish={handleLoadingFinish}
+          durationMs={850}
+        />
+      )}
+
+      {gameState === 'GARAGE' && !isPhotoMode && (
+        <GarageModal
+          upgrades={upgrades}
+          skins={AVAILABLE_SKINS}
+          activeSkinId={activeSkinId}
+          coins={coins}
+          townReputation={activeStats.overallTownReputation}
+          onUpgrade={handleUpgrade}
+          onSelectSkin={handleSelectSkin}
+          onClose={handleCloseGarage}
+        />
+      )}
+
+      {(gameState === 'PAUSED' || gameState === 'VICTORY') && !isPhotoMode && (
+        <PauseVictoryModal
+          isVictory={gameState === 'VICTORY'}
+          stats={activeStats}
+          level={currentLevel}
+          hasNextLevel={levelIndex < GAME_LEVELS.length - 1}
+          onResume={handleResume}
+          onRestart={handleRestart}
+          onNextLevel={handleNextLevel}
+          onOpenGarage={handleOpenGarage}
+          onBackToTitle={handleBackToTitle}
+          onResetCar={handleResetCar}
+        />
+      )}
+    </div>
+  );
 }
-
-export const synthAudio = new SynthAudioSystem();
-
