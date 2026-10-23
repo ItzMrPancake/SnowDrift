@@ -1,0 +1,17 @@
+{
+  "name": "SnowDrift: Town Snow-Plowing",
+  "short_name": "SnowDrift",
+  "description": "Cozy 3D isometric snow-plowing game with vehicle upgrades and dynamic weather.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0c131f",
+  "theme_color": "#0c131f",
+  "icons": [
+    {
+      "src": "./favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}

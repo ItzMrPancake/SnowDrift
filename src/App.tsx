@@ -4,7 +4,16 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GameState, VehicleUpgrades, VehicleSkin, LevelConfig, ActiveGameStats, SaveGameData } from './types/game';
+import {
+  GameState,
+  VehicleUpgrades,
+  VehicleSkin,
+  LevelConfig,
+  ActiveGameStats,
+  SaveGameData,
+  GraphicsSettings,
+  DailyChallenge,
+} from './types/game';
 import { SnowScene } from './three/SnowScene';
 import { TitleScreen } from './components/TitleScreen';
 import { HomeMenu } from './components/HomeMenu';
@@ -12,8 +21,10 @@ import { GameHUD } from './components/GameHUD';
 import { GarageModal } from './components/GarageModal';
 import { PauseVictoryModal } from './components/PauseVictoryModal';
 import { LoadingScreen } from './components/LoadingScreen';
+import { PhotoModeOverlay } from './components/PhotoModeOverlay';
 import { synthAudio } from './audio/synthAudio';
-import { saveManager } from './utils/saveManager';
+import { saveManager, DEFAULT_GRAPHICS_SETTINGS } from './utils/saveManager';
+import { getDailyChallenge } from './utils/dailyChallenge';
 
 const AVAILABLE_SKINS: VehicleSkin[] = [
   {
@@ -108,10 +119,22 @@ export default function App() {
   // Game flow states
   const [gameState, setGameState] = useState<GameState>('TITLE');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isPhotoMode, setIsPhotoMode] = useState<boolean>(false);
   const [levelIndex, setLevelIndex] = useState<number>(() => Math.max(0, (saveData.selectedLevelId || 1) - 1));
   const [coins, setCoins] = useState<number>(() => saveData.coins);
   const [upgrades, setUpgrades] = useState<VehicleUpgrades>(() => saveData.upgrades);
   const [activeSkinId, setActiveSkinId] = useState<string>(() => saveData.activeSkinId);
+
+  // Daily Challenge & Graphics Settings
+  const [dailyChallenge, setDailyChallenge] = useState<DailyChallenge>(() =>
+    getDailyChallenge(saveData.dailyChallengeCompletedDate)
+  );
+  const [graphicsSettings, setGraphicsSettings] = useState<GraphicsSettings>(
+    () => saveData.graphicsSettings || DEFAULT_GRAPHICS_SETTINGS
+  );
+  const [forcedMobileControls, setForcedMobileControls] = useState<boolean>(
+    () => !!saveData.mobileControlsForced
+  );
 
   // Real-time Stats from simulation
   const [activeStats, setActiveStats] = useState<ActiveGameStats>({
@@ -139,7 +162,7 @@ export default function App() {
   const currentLevel = GAME_LEVELS[levelIndex] || GAME_LEVELS[0];
   const activeSkin = AVAILABLE_SKINS.find((s) => s.id === activeSkinId) || AVAILABLE_SKINS[0];
 
-  // Auto-persist coins, upgrades, skins, and high score
+  // Auto-persist coins, upgrades, skins, graphics, and high score
   useEffect(() => {
     saveManager.save({
       coins,
@@ -148,9 +171,27 @@ export default function App() {
       selectedLevelId: levelIndex + 1,
       highScore: Math.max(saveData.highScore, activeStats.score),
       highestCombo: Math.max(saveData.highestCombo, activeStats.combo),
+      graphicsSettings,
+      mobileControlsForced: forcedMobileControls,
+      dailyChallengeCompletedDate: dailyChallenge.isCompleted ? dailyChallenge.dateString : undefined,
     });
     setSaveData(saveManager.getSave());
-  }, [coins, upgrades, activeSkinId, levelIndex, activeStats.score, activeStats.combo]);
+  }, [coins, upgrades, activeSkinId, levelIndex, activeStats.score, activeStats.combo, graphicsSettings, forcedMobileControls, dailyChallenge.isCompleted]);
+
+  // Sync Pause and Photo Mode to SnowScene simulation
+  useEffect(() => {
+    if (snowSceneRef.current) {
+      const shouldPause = gameState === 'PAUSED' || isPhotoMode;
+      snowSceneRef.current.setPaused(shouldPause);
+    }
+  }, [gameState, isPhotoMode]);
+
+  // Apply graphics settings whenever changed
+  useEffect(() => {
+    if (snowSceneRef.current) {
+      snowSceneRef.current.applyGraphicsSettings(graphicsSettings);
+    }
+  }, [graphicsSettings]);
 
   // Initialize and tear down Three.js scene (only when level changes)
   useEffect(() => {
@@ -163,6 +204,19 @@ export default function App() {
       activeSkin,
       (stats) => {
         setActiveStats(stats);
+
+        // Evaluate Daily Challenge objective dynamically
+        if (!dailyChallenge.isCompleted && dailyChallenge.levelId === currentLevel.id) {
+          const reachedTarget = stats.clearedPercent >= dailyChallenge.targetPercent;
+          const weatherMatch = !dailyChallenge.requiredWeather || stats.activeWeather === dailyChallenge.requiredWeather;
+          const timeMatch = !dailyChallenge.timeLimitSeconds || stats.elapsedTime <= dailyChallenge.timeLimitSeconds;
+
+          if (reachedTarget && weatherMatch && timeMatch) {
+            setDailyChallenge((prev) => ({ ...prev, isCompleted: true }));
+            setCoins((c) => c + dailyChallenge.rewardCoins);
+            synthAudio.playUpgrade();
+          }
+        }
       },
       () => {
         setGameState('VICTORY');
@@ -174,6 +228,7 @@ export default function App() {
       }
     );
 
+    scene.applyGraphicsSettings(graphicsSettings);
     snowSceneRef.current = scene;
 
     return () => {
@@ -193,7 +248,9 @@ export default function App() {
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
       if (e.code === 'Escape') {
-        if (gameState === 'PLAYING') {
+        if (isPhotoMode) {
+          handleExitPhotoMode();
+        } else if (gameState === 'PLAYING') {
           setGameState('PAUSED');
         } else if (gameState === 'PAUSED') {
           setGameState('PLAYING');
@@ -202,15 +259,17 @@ export default function App() {
         } else if (gameState === 'HOME') {
           setGameState('PLAYING');
         }
+      } else if (e.code === 'KeyP' && gameState === 'PLAYING' && !isPhotoMode) {
+        handleEnterPhotoMode();
       } else if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
-        if (gameState === 'PLAYING') {
+        if (gameState === 'PLAYING' && !isPhotoMode) {
           handleResetCar();
         }
       }
     };
     window.addEventListener('keydown', handleGlobalKey);
     return () => window.removeEventListener('keydown', handleGlobalKey);
-  }, [gameState]);
+  }, [gameState, isPhotoMode]);
 
   // Handlers
   const handleStartGame = () => {
@@ -247,6 +306,20 @@ export default function App() {
     }
   };
 
+  const handleEnterPhotoMode = () => {
+    setIsPhotoMode(true);
+    if (snowSceneRef.current) {
+      snowSceneRef.current.setPhotoMode(true);
+    }
+  };
+
+  const handleExitPhotoMode = () => {
+    setIsPhotoMode(false);
+    if (snowSceneRef.current) {
+      snowSceneRef.current.setPhotoMode(false);
+    }
+  };
+
   const handleNextLevel = () => {
     const nextIdx = (levelIndex + 1) % GAME_LEVELS.length;
     setLevelIndex(nextIdx);
@@ -254,7 +327,7 @@ export default function App() {
   };
 
   const handleVirtualKey = (action: 'forward' | 'backward' | 'left' | 'right' | 'boost', isHeld: boolean) => {
-    if (snowSceneRef.current) {
+    if (snowSceneRef.current && !isPhotoMode && gameState === 'PLAYING') {
       snowSceneRef.current.setVirtualKey(action, isHeld);
     }
   };
@@ -301,8 +374,11 @@ export default function App() {
     setUpgrades(fresh.upgrades);
     setActiveSkinId(fresh.activeSkinId);
     setLevelIndex(0);
+    setGraphicsSettings(DEFAULT_GRAPHICS_SETTINGS);
+    setDailyChallenge(getDailyChallenge());
     if (snowSceneRef.current) {
       snowSceneRef.current.restartLevel();
+      snowSceneRef.current.applyGraphicsSettings(DEFAULT_GRAPHICS_SETTINGS);
     }
   };
 
@@ -312,7 +388,7 @@ export default function App() {
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full z-0" />
 
       {/* Title Screen Overlay */}
-      {gameState === 'TITLE' && (
+      {gameState === 'TITLE' && !isPhotoMode && (
         <TitleScreen
           onStartGame={handleStartGame}
           onOpenGarage={handleOpenGarage}
@@ -328,16 +404,20 @@ export default function App() {
           currentLevel={currentLevel}
           currentSkin={activeSkin}
           coins={coins}
+          dailyChallenge={dailyChallenge}
         />
       )}
 
       {/* Dedicated Cozy Home Menu */}
-      {gameState === 'HOME' && (
+      {gameState === 'HOME' && !isPhotoMode && (
         <HomeMenu
           levels={GAME_LEVELS}
           currentLevel={currentLevel}
           saveData={saveData}
           activeSkin={activeSkin}
+          dailyChallenge={dailyChallenge}
+          graphicsSettings={graphicsSettings}
+          forcedMobileControls={forcedMobileControls}
           onSelectLevel={(lvl) => {
             const idx = GAME_LEVELS.findIndex((l) => l.id === lvl.id);
             if (idx !== -1) {
@@ -351,19 +431,56 @@ export default function App() {
           }}
           onOpenGarage={handleOpenGarage}
           onResetSave={handleResetSave}
+          onClaimDailyReward={(bonus) => {
+            setCoins((c) => c + bonus);
+            setDailyChallenge((d) => ({ ...d, isCompleted: true }));
+          }}
+          onUpdateGraphicsSettings={(s) => {
+            setGraphicsSettings(s);
+          }}
+          onToggleForcedMobileControls={() => {
+            setForcedMobileControls((f) => !f);
+          }}
         />
       )}
 
-      {/* In-Game World-Matched HUD */}
-      {gameState === 'PLAYING' && (
+      {/* In-Game World-Matched HUD (Hidden during Photo Mode!) */}
+      {gameState === 'PLAYING' && !isPhotoMode && (
         <GameHUD
           stats={activeStats}
           level={currentLevel}
+          dailyChallenge={dailyChallenge}
+          forcedMobileControls={forcedMobileControls}
           onPause={handlePause}
           onOpenGarage={handleOpenGarage}
           onRestart={handleRestart}
           onResetCar={handleResetCar}
+          onOpenPhotoMode={handleEnterPhotoMode}
           onVirtualKey={handleVirtualKey}
+        />
+      )}
+
+      {/* Dedicated Photo Mode Overlay */}
+      {isPhotoMode && (
+        <PhotoModeOverlay
+          districtName={activeStats.currentDistrictName || currentLevel.name}
+          onExit={handleExitPhotoMode}
+          onCaptureScreenshot={() => {
+            if (snowSceneRef.current) {
+              return snowSceneRef.current.captureScreenshot();
+            }
+            return '';
+          }}
+          onSetFov={(zoom) => {
+            if (snowSceneRef.current) {
+              snowSceneRef.current.setPhotoFov(zoom);
+            }
+          }}
+          onRotateCamera={(yawDelta, pitchDelta) => {
+            if (snowSceneRef.current) {
+              snowSceneRef.current.rotatePhotoCamera(yawDelta, pitchDelta);
+            }
+          }}
         />
       )}
 
@@ -377,7 +494,7 @@ export default function App() {
       )}
 
       {/* Garage Upgrades Modal (Does not send player back to start!) */}
-      {gameState === 'GARAGE' && (
+      {gameState === 'GARAGE' && !isPhotoMode && (
         <GarageModal
           upgrades={upgrades}
           skins={AVAILABLE_SKINS}
@@ -391,7 +508,7 @@ export default function App() {
       )}
 
       {/* Pause & Victory Modals */}
-      {(gameState === 'PAUSED' || gameState === 'VICTORY') && (
+      {(gameState === 'PAUSED' || gameState === 'VICTORY') && !isPhotoMode && (
         <PauseVictoryModal
           isVictory={gameState === 'VICTORY'}
           stats={activeStats}

@@ -14,6 +14,7 @@ import {
   ActiveGameStats,
   WeatherType,
   TownDistrict,
+  GraphicsSettings,
 } from '../types/game';
 
 // Pre-allocated math helpers to ensure 0 GC in render loop
@@ -34,13 +35,14 @@ export interface SolidObstacle {
 
 export interface SnowDriftItem {
   id: number;
-  mesh: THREE.Group;
+  mesh: THREE.Group | THREE.Mesh;
   position: THREE.Vector3;
   radius: number;
-  type: 'drift' | 'golden' | 'gift' | 'snowman';
+  type: 'drift' | 'golden' | 'gift' | 'snowman' | 'mailbox' | 'hydrant';
   cleared: boolean;
   value: number;
 }
+
 
 export class SnowScene {
   private container: HTMLElement;
@@ -65,12 +67,33 @@ export class SnowScene {
   private rimLight: THREE.DirectionalLight | null = null;
   private ambientFog: THREE.Fog | null = null;
 
-  // Dynamic Weather State
+  // Game Pause & Photo Mode
+  private isPaused: boolean = false;
+  private isPhotoMode: boolean = false;
+  private photoYaw: number = 0.78;
+  private photoPitch: number = 0.62;
+  private photoDistance: number = 38;
+  private photoFovZoom: number = 32;
+  private photoTarget: THREE.Vector3 = new THREE.Vector3(0, 1.0, 0);
+  private isDraggingPhoto: boolean = false;
+  private lastPointerX: number = 0;
+  private lastPointerY: number = 0;
+
+  // Smooth Dynamic Weather State & Visual Lerping
   private activeWeather: WeatherType = 'light_snow';
   private weatherTimer: number = 42; // countdown per cycle
   private weatherCycleIndex: number = 0;
   private weatherAlertPlayed: boolean = false;
   private weatherNotification: string = '';
+  private currentSkyColor: THREE.Color = new THREE.Color(0xd5e6f3);
+  private targetSkyColor: THREE.Color = new THREE.Color(0xd5e6f3);
+  private currentSunColor: THREE.Color = new THREE.Color(0xfff6e6);
+  private targetSunColor: THREE.Color = new THREE.Color(0xfff6e6);
+  private targetFogNear: number = 42;
+  private targetFogFar: number = 115;
+  private targetKeyIntensity: number = 1.65;
+  private targetHemiIntensity: number = 1.05;
+  private targetConeOpacity: number = 0.2;
 
   // Town Districts & Reputation
   private townDistricts: TownDistrict[] = [];
@@ -775,7 +798,305 @@ export class SnowScene {
     });
 
     this.buildIcePatches();
+    this.buildStreetLife();
   }
+
+  private createParkedCar(color = 0x3b82f6): THREE.Group {
+    const car = new THREE.Group();
+
+    // Lower Chassis
+    const bodyGeo = new THREE.BoxGeometry(1.9, 0.75, 3.6);
+    const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.2 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.55;
+    body.castShadow = !this.isSoftwareGl;
+    body.receiveShadow = !this.isSoftwareGl;
+    car.add(body);
+
+    // Cabin Glass / Pillars
+    const cabinGeo = new THREE.BoxGeometry(1.5, 0.65, 2.0);
+    const cabinMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.2 });
+    const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+    cabin.position.set(0, 1.15, -0.2);
+    cabin.castShadow = !this.isSoftwareGl;
+    car.add(cabin);
+
+    // Thick Snow Cap Blanket atop Roof
+    const snowRoofGeo = new THREE.BoxGeometry(1.58, 0.16, 2.08);
+    const snowMat = new THREE.MeshStandardMaterial({ color: 0xf5f8fc, roughness: 0.6 });
+    const snowRoof = new THREE.Mesh(snowRoofGeo, snowMat);
+    snowRoof.position.set(0, 1.54, -0.2);
+    snowRoof.castShadow = !this.isSoftwareGl;
+    car.add(snowRoof);
+
+    // Snow pile on Hood
+    const snowHood = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.12, 1.0), snowMat);
+    snowHood.position.set(0, 0.95, 1.0);
+    car.add(snowHood);
+
+    // Headlights
+    const hlGeo = new THREE.BoxGeometry(0.35, 0.2, 0.1);
+    const hlMat = new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0xffd566, emissiveIntensity: 0.4 });
+    const hlL = new THREE.Mesh(hlGeo, hlMat);
+    hlL.position.set(-0.65, 0.6, 1.81);
+    const hlR = hlL.clone();
+    hlR.position.x = 0.65;
+    car.add(hlL);
+    car.add(hlR);
+
+    // Wheels
+    const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.25, 8);
+    wheelGeo.rotateZ(Math.PI / 2);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.9 });
+    const wheelPositions = [
+      [-0.95, 0.34, 1.1],
+      [0.95, 0.34, 1.1],
+      [-0.95, 0.34, -1.1],
+      [0.95, 0.34, -1.1],
+    ];
+    wheelPositions.forEach(([wx, wy, wz]) => {
+      const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
+      wMesh.position.set(wx, wy, wz);
+      car.add(wMesh);
+    });
+
+    return car;
+  }
+
+  private createParkBench(): THREE.Group {
+    const bench = new THREE.Group();
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c3d28, roughness: 0.8 });
+    const ironMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, metalness: 0.8, roughness: 0.3 });
+    const snowMat = new THREE.MeshStandardMaterial({ color: 0xf5f8fc, roughness: 0.6 });
+
+    // Seat slats
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.48), woodMat);
+    seat.position.y = 0.45;
+    bench.add(seat);
+
+    // Snow blanket atop bench
+    const snowCushion = new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.07, 0.46), snowMat);
+    snowCushion.position.set(0, 0.52, 0);
+    bench.add(snowCushion);
+
+    // Backrest
+    const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.38, 0.06), woodMat);
+    back.position.set(0, 0.72, -0.22);
+    bench.add(back);
+
+    // Legs
+    [-0.7, 0.7].forEach((lx) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.45, 0.44), ironMat);
+      leg.position.set(lx, 0.22, 0);
+      bench.add(leg);
+    });
+
+    return bench;
+  }
+
+  private createMailbox(): THREE.Group {
+    const boxGroup = new THREE.Group();
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x4a3525, roughness: 0.9 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.4, metalness: 0.6 });
+    const snowMat = new THREE.MeshStandardMaterial({ color: 0xf5f8fc, roughness: 0.6 });
+
+    // Wooden post
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.1, 6), postMat);
+    post.position.y = 0.55;
+    post.castShadow = !this.isSoftwareGl;
+    boxGroup.add(post);
+
+    // Mailbox casing
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.26, 0.42), metalMat);
+    box.position.set(0, 1.05, 0.06);
+    boxGroup.add(box);
+
+    // Little red flag
+    const flag = new THREE.Mesh(
+      new THREE.BoxGeometry(0.03, 0.14, 0.08),
+      new THREE.MeshStandardMaterial({ color: 0xef4444 })
+    );
+    flag.position.set(0.17, 1.12, 0.1);
+    boxGroup.add(flag);
+
+    // Snow cap atop mailbox
+    const snow = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.07, 0.44), snowMat);
+    snow.position.set(0, 1.2, 0.06);
+    boxGroup.add(snow);
+
+    return boxGroup;
+  }
+
+  private createFireHydrant(): THREE.Group {
+    const hydrant = new THREE.Group();
+    const redMat = new THREE.MeshStandardMaterial({ color: 0xd92626, roughness: 0.4, metalness: 0.3 });
+    const snowMat = new THREE.MeshStandardMaterial({ color: 0xf5f8fc, roughness: 0.6 });
+
+    // Body
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.19, 0.75, 8), redMat);
+    body.position.y = 0.38;
+    body.castShadow = !this.isSoftwareGl;
+    hydrant.add(body);
+
+    // Side nozzle caps
+    const capGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.46, 6);
+    capGeo.rotateZ(Math.PI / 2);
+    const caps = new THREE.Mesh(capGeo, redMat);
+    caps.position.y = 0.42;
+    hydrant.add(caps);
+
+    // Snow hat on top
+    const snowCap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 7), snowMat);
+    snowCap.position.y = 0.82;
+    snowCap.scale.set(1, 0.6, 1);
+    hydrant.add(snowCap);
+
+    return hydrant;
+  }
+
+  private buildStreetLife() {
+    const w = this.levelConfig.size.width;
+    const l = this.levelConfig.size.length;
+
+    // 1. Crosswalks (Crisp Zebra Stripes on Road Junctions)
+    const crosswalkMat = new THREE.MeshStandardMaterial({
+      color: 0xf1f5f9,
+      roughness: 0.7,
+      metalness: 0.05,
+    });
+    const stripeGeo = new THREE.PlaneGeometry(0.45, 2.6);
+    stripeGeo.rotateX(-Math.PI / 2);
+
+    const crosswalkLocations: { cx: number; cz: number; rot: number }[] = [
+      { cx: 0, cz: 9.5, rot: 0 },
+      { cx: 0, cz: -9.5, rot: 0 },
+      { cx: 9.5, cz: 0, rot: Math.PI / 2 },
+      { cx: -9.5, cz: 0, rot: Math.PI / 2 },
+    ];
+
+    crosswalkLocations.forEach(({ cx, cz, rot }) => {
+      const cwGroup = new THREE.Group();
+      cwGroup.position.set(cx, 0.015, cz);
+      cwGroup.rotation.y = rot;
+      for (let s = -2; s <= 2; s++) {
+        const stripe = new THREE.Mesh(stripeGeo, crosswalkMat);
+        stripe.position.set(s * 0.75, 0, 0);
+        cwGroup.add(stripe);
+      }
+      this.scene.add(cwGroup);
+    });
+
+    // 2. Curbs (Raised stone edging bordering sidewalks & road margins)
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.85 });
+    const centerCurbGeo = new THREE.RingGeometry(7.15, 7.55, 32);
+    centerCurbGeo.rotateX(-Math.PI / 2);
+    const centerCurb = new THREE.Mesh(centerCurbGeo, curbMat);
+    centerCurb.position.y = 0.03;
+    this.scene.add(centerCurb);
+
+    // 3. Park Benches around Center Plaza
+    const benchCoords: { bx: number; bz: number; rot: number }[] = [
+      { bx: 4.8, bz: 4.8, rot: -Math.PI * 0.75 },
+      { bx: -4.8, bz: 4.8, rot: Math.PI * 0.75 },
+      { bx: 4.8, bz: -4.8, rot: -Math.PI * 0.25 },
+      { bx: -4.8, bz: -4.8, rot: Math.PI * 0.25 },
+    ];
+    benchCoords.forEach(({ bx, bz, rot }) => {
+      const bench = this.createParkBench();
+      bench.position.set(bx, 0, bz);
+      bench.rotation.y = rot;
+      this.scene.add(bench);
+    });
+
+    // 4. Parked Vintage Cars with Snow-Covered Roofs along Roadside Curbs
+    const parkedCars: { x: number; z: number; rot: number; color: number }[] = [
+      { x: 15.5, z: 8.5, rot: 0.6, color: 0x2563eb }, // Sapphire Blue
+      { x: -16.5, z: -7.5, rot: -0.8, color: 0xdc2626 }, // Crimson Sedan
+      { x: 8.5, z: -16.5, rot: 1.5, color: 0x059669 }, // Forest Emerald Station Wagon
+    ];
+    if (this.levelConfig.id >= 2) {
+      parkedCars.push({ x: -15.0, z: 12.0, rot: 2.2, color: 0xd97706 }); // Amber Coupe
+    }
+    parkedCars.forEach(({ x, z, rot, color }) => {
+      const car = this.createParkedCar(color);
+      car.position.set(x, 0, z);
+      car.rotation.y = rot;
+      this.scene.add(car);
+    });
+
+    // 5. Plowable Interactive Mailboxes along Cabin Driveways (Plow right through them!)
+    const mailboxCoords: [number, number, number][] = [
+      [-w * 0.26, -l * 0.2, 0.4],
+      [w * 0.24, -l * 0.22, -0.3],
+      [-w * 0.28, l * 0.16, 1.2],
+      [w * 0.26, l * 0.2, -1.0],
+    ];
+    mailboxCoords.forEach(([mx, mz, mrot], idx) => {
+      const mb = this.createMailbox();
+      mb.position.set(mx, 0, mz);
+      mb.rotation.y = mrot;
+      this.scene.add(mb);
+      this.snowDrifts.push({
+        id: 700 + idx,
+        mesh: mb,
+        position: new THREE.Vector3(mx, 0, mz),
+        radius: 1.1,
+        type: 'mailbox',
+        cleared: false,
+        value: 15,
+      });
+    });
+
+    // 6. Plowable Fire Hydrants (Plow right through them for bonus coins!)
+    const hydrantCoords: [number, number][] = [
+      [3.4, 9.2],
+      [-3.4, -9.2],
+      [9.2, -3.4],
+      [-9.2, 3.4],
+    ];
+    hydrantCoords.forEach(([hx, hz], idx) => {
+      const hyd = this.createFireHydrant();
+      hyd.position.set(hx, 0, hz);
+      this.scene.add(hyd);
+      this.snowDrifts.push({
+        id: 800 + idx,
+        mesh: hyd,
+        position: new THREE.Vector3(hx, 0, hz),
+        radius: 1.1,
+        type: 'hydrant',
+        cleared: false,
+        value: 25,
+      });
+    });
+
+    // 7. Extra Cute Park Snowmen (Plowable!)
+    const parkSnowman1 = this.createSnowman();
+    parkSnowman1.position.set(0, 0, 5.8);
+    this.scene.add(parkSnowman1);
+    this.snowDrifts.push({
+      id: 995,
+      mesh: parkSnowman1,
+      position: new THREE.Vector3(0, 0, 5.8),
+      radius: 1.1,
+      type: 'snowman',
+      cleared: false,
+      value: 35,
+    });
+
+    const parkSnowman2 = this.createSnowman();
+    parkSnowman2.position.set(-5.8, 0, 0);
+    this.scene.add(parkSnowman2);
+    this.snowDrifts.push({
+      id: 996,
+      mesh: parkSnowman2,
+      position: new THREE.Vector3(-5.8, 0, 0),
+      radius: 1.1,
+      type: 'snowman',
+      cleared: false,
+      value: 35,
+    });
+  }
+
 
   private buildIcePatches() {
     const iceGeo = new THREE.CircleGeometry(2.5, 16);
@@ -1277,7 +1598,45 @@ export class SnowScene {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', this.onPointerDown);
+    window.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerUp);
+    el.addEventListener('wheel', this.onWheel, { passive: false });
   }
+
+  private onPointerDown = (e: PointerEvent) => {
+    if (!this.isPhotoMode) return;
+    this.isDraggingPhoto = true;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+  };
+
+  private onPointerMove = (e: PointerEvent) => {
+    if (!this.isPhotoMode || !this.isDraggingPhoto) return;
+    const dx = e.clientX - this.lastPointerX;
+    const dy = e.clientY - this.lastPointerY;
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+
+    this.photoYaw += dx * 0.007;
+    this.photoPitch = Math.max(0.12, Math.min(1.42, this.photoPitch - dy * 0.007));
+  };
+
+  private onPointerUp = () => {
+    this.isDraggingPhoto = false;
+  };
+
+  private onWheel = (e: WheelEvent) => {
+    if (!this.isPhotoMode) return;
+    e.preventDefault();
+    this.photoDistance = Math.max(14, Math.min(75, this.photoDistance + e.deltaY * 0.03));
+    this.photoFovZoom = Math.max(16, Math.min(55, this.photoFovZoom + e.deltaY * 0.025));
+    this.updatePhotoCameraFrustum();
+  };
+
 
   private onKeyDown = (e: KeyboardEvent) => {
     this.heldKeys[e.code] = true;
@@ -1352,62 +1711,70 @@ export class SnowScene {
   }
 
   private applyWeatherVisuals(weather: WeatherType) {
-    if (!this.ambientFog || !this.keyLight || !this.hemiLight) return;
-
     if (weather === 'clear') {
       // Golden luminous sun & radiant crisp mist
-      const sunColor = 0xfff0d6;
-      const skyColor = 0xe0effa;
-      this.scene.background = new THREE.Color(skyColor);
-      this.ambientFog.color.setHex(skyColor);
-      this.ambientFog.near = 48;
-      this.ambientFog.far = 135;
-      this.keyLight.color.setHex(sunColor);
-      this.keyLight.intensity = 2.0;
-      this.hemiLight.intensity = 1.2;
-      this.headlightCones.forEach((c) => {
-        (c.material as THREE.MeshBasicMaterial).opacity = 0.12;
-      });
+      this.targetSunColor.setHex(0xfff0d6);
+      this.targetSkyColor.setHex(0xe0effa);
+      this.targetFogNear = 48;
+      this.targetFogFar = 135;
+      this.targetKeyIntensity = 2.0;
+      this.targetHemiIntensity = 1.2;
+      this.targetConeOpacity = 0.12;
     } else if (weather === 'blizzard') {
-      // Whiteout snow squall: headlamps glow brightly, swirling winds
-      const stormColor = 0x93a8ba;
-      this.scene.background = new THREE.Color(stormColor);
-      this.ambientFog.color.setHex(stormColor);
-      this.ambientFog.near = 32;
-      this.ambientFog.far = 85;
-      this.keyLight.intensity = 1.1;
-      this.hemiLight.intensity = 0.8;
-      this.headlightCones.forEach((c) => {
-        (c.material as THREE.MeshBasicMaterial).opacity = 0.42;
-      });
+      // Whiteout snow squall
+      this.targetSunColor.setHex(0xd0e8fa);
+      this.targetSkyColor.setHex(0x93a8ba);
+      this.targetFogNear = 32;
+      this.targetFogFar = 85;
+      this.targetKeyIntensity = 1.1;
+      this.targetHemiIntensity = 0.8;
+      this.targetConeOpacity = 0.45;
     } else if (weather === 'aurora') {
       // Ethereal emerald & violet twilight
-      const auroraColor = 0x142a38;
-      this.scene.background = new THREE.Color(auroraColor);
-      this.ambientFog.color.setHex(auroraColor);
-      this.ambientFog.near = 40;
-      this.ambientFog.far = 110;
-      this.keyLight.color.setHex(0x7ef0d5);
-      this.keyLight.intensity = 1.3;
-      this.hemiLight.color.setHex(0x5eead4);
-      this.hemiLight.groundColor.setHex(0x312e81);
-      this.headlightCones.forEach((c) => {
-        (c.material as THREE.MeshBasicMaterial).opacity = 0.35;
-      });
+      this.targetSunColor.setHex(0x7ef0d5);
+      this.targetSkyColor.setHex(0x142a38);
+      this.targetFogNear = 40;
+      this.targetFogFar = 110;
+      this.targetKeyIntensity = 1.3;
+      this.targetHemiIntensity = 1.1;
+      this.targetConeOpacity = 0.35;
     } else {
       // Standard light snow: cozy winter daylight
-      const skyColor = 0xd5e6f3;
-      this.scene.background = new THREE.Color(skyColor);
-      this.ambientFog.color.setHex(skyColor);
-      this.ambientFog.near = 42;
-      this.ambientFog.far = 115;
-      this.keyLight.color.setHex(0xfff6e6);
-      this.keyLight.intensity = 1.65;
-      this.hemiLight.intensity = 1.05;
-      this.headlightCones.forEach((c) => {
-        (c.material as THREE.MeshBasicMaterial).opacity = 0.2;
-      });
+      this.targetSunColor.setHex(0xfff6e6);
+      this.targetSkyColor.setHex(0xd5e6f3);
+      this.targetFogNear = 42;
+      this.targetFogFar = 115;
+      this.targetKeyIntensity = 1.65;
+      this.targetHemiIntensity = 1.05;
+      this.targetConeOpacity = 0.2;
     }
+  }
+
+  private updateWeatherVisualLerp(dt: number) {
+    const rate = Math.min(1.0, dt * 1.5);
+    this.currentSkyColor.lerp(this.targetSkyColor, rate);
+    this.scene.background = this.currentSkyColor;
+
+    if (this.ambientFog) {
+      this.ambientFog.color.copy(this.currentSkyColor);
+      this.ambientFog.near = THREE.MathUtils.lerp(this.ambientFog.near, this.targetFogNear, rate);
+      this.ambientFog.far = THREE.MathUtils.lerp(this.ambientFog.far, this.targetFogFar, rate);
+    }
+
+    if (this.keyLight) {
+      this.currentSunColor.lerp(this.targetSunColor, rate);
+      this.keyLight.color.copy(this.currentSunColor);
+      this.keyLight.intensity = THREE.MathUtils.lerp(this.keyLight.intensity, this.targetKeyIntensity, rate);
+    }
+
+    if (this.hemiLight) {
+      this.hemiLight.intensity = THREE.MathUtils.lerp(this.hemiLight.intensity, this.targetHemiIntensity, rate);
+    }
+
+    this.headlightCones.forEach((c) => {
+      const mat = c.material as THREE.MeshBasicMaterial;
+      mat.opacity = THREE.MathUtils.lerp(mat.opacity, this.targetConeOpacity, rate);
+    });
   }
 
   /**
@@ -1422,13 +1789,23 @@ export class SnowScene {
       this.lastTime = now;
       const dt = Math.min(rawDt, 0.05);
 
-      if (this.hitstopTimer > 0) {
-        this.hitstopTimer -= dt;
-      } else {
-        this.updateSimulation(dt);
-      }
+      this.updateWeatherVisualLerp(dt);
 
-      this.render();
+      if (this.isPhotoMode) {
+        this.updatePhotoCamera(dt);
+        this.updateParticles(dt * 0.25);
+        this.render();
+      } else if (this.isPaused) {
+        // When game is paused, freeze vehicle kinematics & plow calculation
+        this.render();
+      } else {
+        if (this.hitstopTimer > 0) {
+          this.hitstopTimer -= dt;
+        } else {
+          this.updateSimulation(dt);
+        }
+        this.render();
+      }
 
       if (this.isSoftwareGl) {
         this.afterDraw(tick);
@@ -1920,12 +2297,28 @@ export class SnowScene {
 
         if (drift.type === 'snowman') {
           synthAudio.playPickup();
-          this.stats.coinsEarned += 25;
+          this.stats.coinsEarned += 35;
           this.stats.score += 350 * this.stats.combo;
           this.stats.combo = Math.min(10, this.stats.combo + 2);
           this.stats.comboTimer = 3.2;
           this.emitBurstParticles(drift.position.x, 0.8, drift.position.z, 28, 0xffffff);
           this.emitBurstParticles(drift.position.x, 1.2, drift.position.z, 12, 0xe66012);
+        } else if (drift.type === 'mailbox') {
+          synthAudio.playPickup();
+          this.stats.coinsEarned += 15;
+          this.stats.score += 200 * this.stats.combo;
+          this.stats.combo = Math.min(10, this.stats.combo + 1);
+          this.stats.comboTimer = 2.8;
+          this.emitBurstParticles(drift.position.x, 0.6, drift.position.z, 20, 0x854d0e);
+          this.emitBurstParticles(drift.position.x, 1.0, drift.position.z, 16, 0xef4444);
+        } else if (drift.type === 'hydrant') {
+          synthAudio.playComboChime(this.stats.combo + 1);
+          this.stats.coinsEarned += 25;
+          this.stats.score += 300 * this.stats.combo;
+          this.stats.combo = Math.min(10, this.stats.combo + 2);
+          this.stats.comboTimer = 3.4;
+          this.emitBurstParticles(drift.position.x, 0.5, drift.position.z, 24, 0xdc2626);
+          this.emitBurstParticles(drift.position.x, 0.9, drift.position.z, 24, 0x38bdf8);
         } else if (drift.type === 'gift') {
           synthAudio.playPickup();
           this.stats.coinsEarned += drift.value;
@@ -1940,9 +2333,10 @@ export class SnowScene {
           this.stats.comboTimer = 3.0;
         } else {
           synthAudio.playBump();
-          this.stats.coinsEarned += 2;
-          this.stats.score += 50 * this.stats.combo;
+          this.stats.coinsEarned += 4;
+          this.stats.score += 60 * this.stats.combo;
           this.stats.comboTimer = 2.6;
+          this.emitBurstParticles(drift.position.x, 0.4, drift.position.z, 18, 0xffffff);
         }
 
         this.addCameraShake(0.18);
@@ -2095,6 +2489,120 @@ export class SnowScene {
     this.buildSnowDrifts();
   }
 
+  // --- Game Pause & Control Handling ---
+  public setPaused(paused: boolean) {
+    this.isPaused = paused;
+    if (paused) {
+      // Clear key presses so inputs don't leak or stick
+      this.heldKeys = {};
+      this.speed = 0;
+      this.angularVelocity = 0;
+      this.isBoosting = false;
+      synthAudio.setPaused(true);
+    } else {
+      synthAudio.setPaused(false);
+    }
+  }
+
+  // --- Photo Mode System ---
+  public setPhotoMode(enabled: boolean) {
+    this.isPhotoMode = enabled;
+    if (enabled) {
+      this.setPaused(true);
+      // Center photo target at vehicle position
+      this.photoTarget.set(this.posX, 1.0, this.posZ);
+      this.photoYaw = 0.78;
+      this.photoPitch = 0.62;
+      this.photoDistance = 38;
+      this.photoFovZoom = 32;
+      this.updatePhotoCameraFrustum();
+    } else {
+      this.setPaused(false);
+      this.updatePhotoCameraFrustum();
+    }
+  }
+
+  public isPhotoModeActive(): boolean {
+    return this.isPhotoMode;
+  }
+
+  public rotatePhotoCamera(deltaYaw: number, deltaPitch: number) {
+    this.photoYaw += deltaYaw;
+    this.photoPitch = Math.max(0.12, Math.min(1.42, this.photoPitch + deltaPitch));
+  }
+
+  public setPhotoFov(zoom: number) {
+    this.photoFovZoom = Math.max(16, Math.min(55, zoom));
+    this.updatePhotoCameraFrustum();
+  }
+
+  public updatePhotoCamera(dt: number) {
+    const x = this.photoTarget.x + Math.sin(this.photoYaw) * Math.cos(this.photoPitch) * this.photoDistance;
+    const y = this.photoTarget.y + Math.sin(this.photoPitch) * this.photoDistance;
+    const z = this.photoTarget.z + Math.cos(this.photoYaw) * Math.cos(this.photoPitch) * this.photoDistance;
+
+    this.camera.position.set(x, y, z);
+    this.camera.lookAt(this.photoTarget.x, this.photoTarget.y, this.photoTarget.z);
+  }
+
+  private updatePhotoCameraFrustum() {
+    if (!this.container || this.isDestroyed) return;
+    const width = this.container.clientWidth || window.innerWidth;
+    const height = this.container.clientHeight || window.innerHeight;
+    const aspect = width / height;
+    const f = this.isPhotoMode ? this.photoFovZoom : this.frustumSize;
+
+    this.camera.left = (-f * aspect) / 2;
+    this.camera.right = (f * aspect) / 2;
+    this.camera.top = f / 2;
+    this.camera.bottom = -f / 2;
+    this.camera.updateProjectionMatrix();
+  }
+
+  public captureScreenshot(): string {
+    this.renderer.render(this.scene, this.camera);
+    return this.renderer.domElement.toDataURL('image/png');
+  }
+
+  // --- Graphics & Quality Settings System ---
+  public applyGraphicsSettings(settings: GraphicsSettings) {
+    if (!this.renderer || this.isDestroyed) return;
+
+    // 1. Pixel Ratio / Resolution scaling
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    let ratio = 1;
+    if (settings.resolution === '720p') {
+      ratio = Math.min(1.0, dpr * 0.75);
+    } else if (settings.resolution === '1080p') {
+      ratio = Math.min(1.5, dpr * 1.0);
+    } else if (settings.resolution === '1440p') {
+      ratio = Math.min(2.0, dpr * 1.35);
+    } else if (settings.resolution === '4k') {
+      ratio = Math.max(2.0, dpr * 1.8);
+    }
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : ratio);
+
+    // 2. Shadows Quality
+    if (settings.shadows === 'off') {
+      this.renderer.shadowMap.enabled = false;
+    } else {
+      this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+      if (this.keyLight && this.keyLight.shadow) {
+        const shadowRes = settings.shadows === 'ultra' ? 2048 : 1024;
+        this.keyLight.shadow.mapSize.width = shadowRes;
+        this.keyLight.shadow.mapSize.height = shadowRes;
+      }
+    }
+
+    // 3. Snow Particle Density
+    if (this.snowParticles) {
+      let count = 800;
+      if (settings.snowParticles === 'low') count = 350;
+      else if (settings.snowParticles === 'high') count = 1500;
+      this.snowParticles.geometry.setDrawRange(0, count);
+    }
+  }
+
   public destroy() {
     this.isDestroyed = true;
     if (this.animFrameId) {
@@ -2106,6 +2614,15 @@ export class SnowScene {
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('resize', this.onResize);
 
+    const el = this.renderer?.domElement;
+    if (el) {
+      el.removeEventListener('pointerdown', this.onPointerDown);
+      window.removeEventListener('pointermove', this.onPointerMove);
+      window.removeEventListener('pointerup', this.onPointerUp);
+      window.removeEventListener('pointercancel', this.onPointerUp);
+      el.removeEventListener('wheel', this.onWheel);
+    }
+
     try {
       this.renderer.dispose();
       if (this.renderer.domElement.parentElement) {
@@ -2116,3 +2633,4 @@ export class SnowScene {
     }
   }
 }
+

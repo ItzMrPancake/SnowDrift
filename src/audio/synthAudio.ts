@@ -366,55 +366,213 @@ class SynthAudioSystem {
     } catch {}
   }
 
+  // Jukebox Tracks System
+  public currentTrackIndex = 0;
+  public tracks = [
+    { id: 0, name: 'Lo-fi Winter Chill', mood: 'Warm electric piano & mellow snowfall chords', interval: 4400 },
+    { id: 1, name: 'Snowflake Waltz', mood: 'Crystalline music box arpeggios & bells', interval: 3200 },
+    { id: 2, name: 'Alpine Mountain Pass', mood: 'Cozy melodic groove with analog bassline', interval: 3800 },
+    { id: 3, name: 'Aurora Twilight', mood: 'Deep ambient pads & starry reverb sweeps', interval: 5200 },
+  ];
+  private isPaused: boolean = false;
+
+  public setPaused(paused: boolean) {
+    this.isPaused = paused;
+    if (paused) {
+      if (this.engineGain && this.ctx) {
+        this.engineGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
+      }
+      if (this.snowNoiseGain && this.ctx) {
+        this.snowNoiseGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
+      }
+    }
+  }
+
+  public getTrackList() {
+    return this.tracks;
+  }
+
+  public getCurrentTrackInfo() {
+    return this.tracks[this.currentTrackIndex] || this.tracks[0];
+  }
+
+  public setTrack(index: number) {
+    this.currentTrackIndex = Math.max(0, Math.min(this.tracks.length - 1, index));
+    this.restartAmbientMusic();
+    return this.getCurrentTrackInfo();
+  }
+
+  public cycleTrack() {
+    this.currentTrackIndex = (this.currentTrackIndex + 1) % this.tracks.length;
+    this.restartAmbientMusic();
+    return this.getCurrentTrackInfo();
+  }
+
+  private restartAmbientMusic() {
+    if (this.ambientInterval) {
+      clearInterval(this.ambientInterval);
+      this.ambientInterval = null;
+    }
+    this.startAmbientMusic();
+  }
+
   private startAmbientMusic() {
     if (this.ambientInterval) return;
 
-    // Cozy, calm winter progression: Cmaj7 -> Am7 -> Dm9 -> Gsus4
-    const chords = [
+    // Track 0: Lo-fi Winter Chill (Cmaj7 -> Am9 -> Dm9 -> G13)
+    const lofiChords = [
       [261.63, 329.63, 392.00, 493.88], // Cmaj7
-      [220.00, 261.63, 329.63, 392.00], // Am7
-      [146.83, 220.00, 293.66, 369.99], // Dm9-ish
-      [196.00, 261.63, 293.66, 392.00], // Gsus4
+      [220.00, 261.63, 329.63, 392.00, 493.88], // Am9
+      [146.83, 220.00, 261.63, 329.63, 392.00], // Dm9
+      [196.00, 246.94, 329.63, 440.00], // G13
     ];
 
-    let chordIndex = 0;
+    // Track 1: Snowflake Waltz (Fmaj7 -> Em7 -> Dm7 -> Cmaj7 arpeggios)
+    const waltzNotes = [
+      [349.23, 440.00, 523.25, 659.25], // Fmaj7
+      [329.63, 392.00, 493.88, 587.33], // Em7
+      [293.66, 349.23, 440.00, 523.25], // Dm7
+      [261.63, 329.63, 392.00, 523.25], // Cmaj7
+    ];
 
-    const playChord = () => {
-      if (!this.ctx || !this.masterGain || this.isMuted) return;
+    // Track 2: Alpine Mountain Pass (G -> Em -> C -> D bass & upbeat chords)
+    const alpineChords = [
+      { bass: 98.0, chord: [196.00, 246.94, 293.66, 392.00] }, // G
+      { bass: 82.41, chord: [164.81, 196.00, 246.94, 329.63] }, // Em
+      { bass: 130.81, chord: [261.63, 329.63, 392.00, 523.25] }, // C
+      { bass: 146.83, chord: [293.66, 369.99, 440.00, 587.33] }, // D
+    ];
 
-      const chord = chords[chordIndex % chords.length];
-      chordIndex++;
+    // Track 3: Aurora Twilight (Deep pads: Ebmaj7 -> Cm7 -> Abmaj7 -> Bb)
+    const auroraPads = [
+      [155.56, 233.08, 311.13, 392.00, 466.16], // Ebmaj7
+      [130.81, 196.00, 261.63, 311.13, 392.00], // Cm7
+      [103.83, 207.65, 261.63, 311.13, 415.30], // Abmaj7
+      [116.54, 233.08, 293.66, 349.23, 466.16], // Bb
+    ];
 
+    let chordStep = 0;
+
+    const playStep = () => {
+      if (!this.ctx || !this.masterGain || this.isMuted || this.isPaused) return;
       const now = this.ctx.currentTime;
-      chord.forEach((freq) => {
-        if (!this.ctx || !this.masterGain) return;
-        const osc = this.ctx.createOscillator();
-        const filter = this.ctx.createBiquadFilter();
-        const gain = this.ctx.createGain();
+      const track = this.currentTrackIndex;
 
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(freq * 0.5, now); // soft warm octave down
+      if (track === 0) {
+        // Track 0: Lo-fi warm chords
+        const chord = lofiChords[chordStep % lofiChords.length];
+        chordStep++;
+        chord.forEach((freq, i) => {
+          if (!this.ctx || !this.masterGain) return;
+          const osc = this.ctx.createOscillator();
+          const filter = this.ctx.createBiquadFilter();
+          const gain = this.ctx.createGain();
 
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(320, now);
+          osc.type = i % 2 === 0 ? 'sine' : 'triangle';
+          osc.frequency.setValueAtTime(freq * 0.5, now);
 
-        // Gentle swell & fade
-        gain.gain.setValueAtTime(0.001, now);
-        gain.gain.linearRampToValueAtTime(0.035 * this.musicVolume, now + 1.2);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 4.8);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(380, now);
 
-        osc.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.masterGain);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.linearRampToValueAtTime(0.04 * this.musicVolume, now + 1.0);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 4.2);
 
-        osc.start(now);
-        osc.stop(now + 5.0);
-      });
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(this.masterGain);
+
+          osc.start(now);
+          osc.stop(now + 4.4);
+        });
+      } else if (track === 1) {
+        // Track 1: Snowflake Waltz arpeggios
+        const notes = waltzNotes[chordStep % waltzNotes.length];
+        chordStep++;
+        notes.forEach((freq, idx) => {
+          if (!this.ctx || !this.masterGain) return;
+          const tNote = now + idx * 0.38;
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, tNote);
+
+          gain.gain.setValueAtTime(0.001, tNote);
+          gain.gain.linearRampToValueAtTime(0.045 * this.musicVolume, tNote + 0.05);
+          gain.gain.exponentialRampToValueAtTime(0.0005, tNote + 1.8);
+
+          osc.connect(gain);
+          gain.connect(this.masterGain);
+
+          osc.start(tNote);
+          osc.stop(tNote + 1.9);
+        });
+      } else if (track === 2) {
+        // Track 2: Alpine Mountain Pass with synth bass
+        const item = alpineChords[chordStep % alpineChords.length];
+        chordStep++;
+
+        // Bass punch
+        const bassOsc = this.ctx.createOscillator();
+        const bassGain = this.ctx.createGain();
+        bassOsc.type = 'triangle';
+        bassOsc.frequency.setValueAtTime(item.bass, now);
+        bassGain.gain.setValueAtTime(0.06 * this.musicVolume, now);
+        bassGain.gain.exponentialRampToValueAtTime(0.001, now + 1.6);
+        bassOsc.connect(bassGain);
+        bassGain.connect(this.masterGain);
+        bassOsc.start(now);
+        bassOsc.stop(now + 1.7);
+
+        // Synth chord
+        item.chord.forEach((freq) => {
+          if (!this.ctx || !this.masterGain) return;
+          const osc = this.ctx.createOscillator();
+          const filter = this.ctx.createBiquadFilter();
+          const gain = this.ctx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(freq * 0.5, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(420, now);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.linearRampToValueAtTime(0.028 * this.musicVolume, now + 0.5);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 3.2);
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(this.masterGain);
+          osc.start(now);
+          osc.stop(now + 3.3);
+        });
+      } else {
+        // Track 3: Aurora Twilight ambient space pads
+        const pad = auroraPads[chordStep % auroraPads.length];
+        chordStep++;
+        pad.forEach((freq) => {
+          if (!this.ctx || !this.masterGain) return;
+          const osc = this.ctx.createOscillator();
+          const filter = this.ctx.createBiquadFilter();
+          const gain = this.ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq * 0.5, now);
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(500, now);
+          filter.frequency.linearRampToValueAtTime(260, now + 4.5);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.linearRampToValueAtTime(0.038 * this.musicVolume, now + 1.8);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 5.0);
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(this.masterGain);
+          osc.start(now);
+          osc.stop(now + 5.2);
+        });
+      }
     };
 
-    // Initial chord and every 4.6 seconds
-    playChord();
-    this.ambientInterval = window.setInterval(playChord, 4600);
+    const intervalMs = this.tracks[this.currentTrackIndex]?.interval || 4200;
+    playStep();
+    this.ambientInterval = window.setInterval(playStep, intervalMs);
   }
 
   public toggleMute(): boolean {
@@ -450,3 +608,4 @@ class SynthAudioSystem {
 }
 
 export const synthAudio = new SynthAudioSystem();
+

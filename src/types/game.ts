@@ -67,6 +67,30 @@ export interface ActiveGameStats {
   activeWeather: WeatherType;
   weatherTimeRemaining: number;
   weatherNotification?: string;
+  dailyChallengeProgress?: number;
+}
+
+export interface DailyChallenge {
+  id: string; // e.g. "challenge-2026-10-22"
+  dateString: string; // "YYYY-MM-DD"
+  title: string;
+  description: string;
+  levelId: number;
+  levelName: string;
+  targetPercent: number;
+  requiredWeather?: WeatherType;
+  timeLimitSeconds?: number;
+  rewardCoins: number;
+  isCompleted: boolean;
+}
+
+export interface GraphicsSettings {
+  resolution: '720p' | '1080p' | '1440p' | '4k';
+  targetFps: 30 | 60 | 120 | 0; // 0 = uncapped
+  shadows: 'off' | 'medium' | 'ultra';
+  snowParticles: 'low' | 'medium' | 'high';
+  bloomAndGlow: boolean;
+  vSync: boolean;
 }
 
 export interface SaveGameData {
@@ -82,4 +106,8 @@ export interface SaveGameData {
   highestCombo: number;
   highScore: number;
   lastSavedAt: number;
+  dailyChallengeCompletedDate?: string;
+  graphicsSettings?: GraphicsSettings;
+  mobileControlsForced?: boolean;
 }
+

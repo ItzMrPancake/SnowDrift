@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
-import { Volume2, VolumeX, Sparkles, Trophy, Wrench, Play } from 'lucide-react';
+import { Volume2, VolumeX, Sparkles, Trophy, Wrench, Play, Calendar } from 'lucide-react';
 import { synthAudio } from '../audio/synthAudio';
-import { LevelConfig, VehicleSkin } from '../types/game';
+import { LevelConfig, VehicleSkin, DailyChallenge } from '../types/game';
 
 interface TitleScreenProps {
   onStartGame: () => void;
@@ -12,6 +12,7 @@ interface TitleScreenProps {
   currentLevel: LevelConfig;
   currentSkin: VehicleSkin;
   coins: number;
+  dailyChallenge?: DailyChallenge;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
@@ -22,6 +23,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   levels,
   currentLevel,
   coins,
+  dailyChallenge,
 }) => {
   const [muted, setMuted] = React.useState(synthAudio.getMuted());
 
@@ -50,13 +52,14 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
     <div className="absolute inset-0 flex flex-col justify-between pointer-events-none p-6 md:p-10 select-none z-20">
       {/* Top Bar Status */}
       <div className="flex justify-between items-center w-full">
-        {/* Winter Snow Badge */}
-        <div className="pointer-events-auto flex items-center gap-3 bg-[#131b26]/90 border border-cyan-500/30 rounded-xl px-4 py-2 text-cyan-100 shadow-lg">
+        {/* District & Clean Title Badge - Removed 60 fps synth physics */}
+        <div className="pointer-events-auto flex items-center gap-2.5 bg-[#131b26]/90 border border-cyan-500/30 rounded-xl px-4 py-2 text-cyan-100 shadow-lg">
           <Sparkles className="w-4 h-4 text-cyan-300" />
-          <span className="text-xs font-semibold tracking-wider uppercase text-cyan-300">Winter Season</span>
+          <span className="text-xs font-semibold tracking-wider uppercase text-cyan-300">SnowDrift</span>
           <span className="text-xs text-cyan-200/60">·</span>
-          <span className="text-xs font-medium text-cyan-200">60 FPS Synth Physics</span>
+          <span className="text-xs font-medium text-cyan-200">{currentLevel.name}</span>
         </div>
+
 
         {/* Audio & Garage Buttons */}
         <div className="pointer-events-auto flex items-center gap-3">

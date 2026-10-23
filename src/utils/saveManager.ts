@@ -1,4 +1,4 @@
-import { SaveGameData, VehicleUpgrades } from '../types/game';
+import { GraphicsSettings, SaveGameData, VehicleUpgrades } from '../types/game';
 
 const SAVE_KEY = 'snowdrift_save_v1';
 
@@ -10,6 +10,15 @@ export const DEFAULT_UPGRADES: VehicleUpgrades = {
   boostTank: 1,
   heatedBlade: 0,
   blowerTurbine: 0,
+};
+
+export const DEFAULT_GRAPHICS_SETTINGS: GraphicsSettings = {
+  resolution: '1080p',
+  targetFps: 60,
+  shadows: 'medium',
+  snowParticles: 'medium',
+  bloomAndGlow: true,
+  vSync: true,
 };
 
 export const DEFAULT_SAVE_DATA: SaveGameData = {
@@ -30,6 +39,9 @@ export const DEFAULT_SAVE_DATA: SaveGameData = {
   highestCombo: 1,
   highScore: 0,
   lastSavedAt: Date.now(),
+  graphicsSettings: DEFAULT_GRAPHICS_SETTINGS,
+  dailyChallengeCompletedDate: '',
+  mobileControlsForced: false,
 };
 
 class SaveManager {

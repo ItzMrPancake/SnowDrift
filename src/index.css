@@ -28,3 +28,16 @@
 .animate-spin-slow {
   animation: spinSlow 12s linear infinite;
 }
+
+/* Landscape Mobile (Horizontal view under 500px height) optimization */
+@media (max-height: 520px) {
+  .district-progress-card {
+    padding: 0.35rem 0.5rem !important;
+    max-width: 190px !important;
+    gap: 0.2rem !important;
+  }
+  .district-progress-card .reputation-details {
+    display: none !important;
+  }
+}
+
